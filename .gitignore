@@ -5,3 +5,5 @@
 
 # User config — may hold tokens (CryptoPanic key, Telegram bot token)
 config.toml
+
+CLAUDE.md
