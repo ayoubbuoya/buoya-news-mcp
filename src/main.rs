@@ -66,14 +66,10 @@ async fn run() -> Result<()> {
 
     println!("App state: {app_state:?}");
 
-    // Test the fetch rss source
-    let raw_items = fetchers::rss::fetch_rss_source(
-        &app_state.http_client,
-        &app_state.config.toml_config.sources.rss[0],
-    )
-    .await?;
-
-    tracing::info!("First Rss Feed Raw Items: {raw_items:?}");
+    // Do the first ingest
+    let new_stored = ingest::run(&app_state).await;
+    
+    tracing::info!("Ingested {} new items", new_stored);
 
     let llm_model = "openai/gpt-oss-20b:free";
 
