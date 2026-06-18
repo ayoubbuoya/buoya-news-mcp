@@ -261,7 +261,7 @@ impl App {
 
         let is_first = self.messages.is_empty();
         let user_msg =
-            db::insert_message(&self.state.db_pool, &session_id, Role::User, &text).await?;
+            db::insert_message(&self.state.db_pool, &session_id, Role::User, &text, &[]).await?;
         self.messages.push(user_msg);
 
         // Auto-title a still-unnamed session from its opening message.
@@ -326,14 +326,14 @@ impl App {
         if let Some(session_id) = self.current_session_id.clone()
             && !partial.trim().is_empty()
         {
-            let mut msg = db::insert_message(
+            let msg = db::insert_message(
                 &self.state.db_pool,
                 &session_id,
                 Role::Assistant,
                 &partial,
+                &tools,
             )
             .await?;
-            msg.tools_used = tools;
             self.messages.push(msg);
         }
 

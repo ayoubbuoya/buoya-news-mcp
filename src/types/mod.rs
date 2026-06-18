@@ -63,8 +63,8 @@ pub struct ChatMessage {
     pub content: String,
     pub created_at: String,
     /// Human-readable labels for any tools the assistant invoked while producing
-    /// this message. Shown in the UI for transparency; not persisted to the DB,
-    /// so it is empty for messages loaded from a previous session.
+    /// this message. Shown in the UI for transparency and persisted to the DB
+    /// (as a JSON array in `chat_messages.tool_calls`).
     pub tools_used: Vec<String>,
 }
 

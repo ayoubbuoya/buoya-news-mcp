@@ -54,11 +54,22 @@ pub async fn init_db() -> Result<SqlitePool> {
             session_id  TEXT NOT NULL REFERENCES chat_sessions(id),
             role        TEXT NOT NULL,
             content     TEXT NOT NULL,
+            tool_calls  TEXT,
             created_at  TEXT NOT NULL DEFAULT (datetime('now'))
          );",
     )
     .execute(&pool)
     .await?;
+
+    // Backfill the column on databases created before `tool_calls` existed. The
+    // ALTER errors with "duplicate column name" once the column is present, which
+    // is the expected steady state, so the error is ignored.
+    if let Err(e) = sqlx::query("ALTER TABLE chat_messages ADD COLUMN tool_calls TEXT")
+        .execute(&pool)
+        .await
+    {
+        tracing::debug!("tool_calls column migration skipped: {e}");
+    }
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_chat_messages_session
@@ -122,7 +133,7 @@ pub async fn list_sessions(pool: &SqlitePool) -> Result<Vec<ChatSession>> {
 /// Load every message of a session, oldest first.
 pub async fn load_messages(pool: &SqlitePool, session_id: &str) -> Result<Vec<ChatMessage>> {
     let rows = sqlx::query(
-        "SELECT id, session_id, role, content, created_at
+        "SELECT id, session_id, role, content, tool_calls, created_at
          FROM chat_messages
          WHERE session_id = ?
          ORDER BY id ASC",
@@ -136,33 +147,47 @@ pub async fn load_messages(pool: &SqlitePool, session_id: &str) -> Result<Vec<Ch
     for row in rows {
         let role_str: String = row.get("role");
         let role = Role::from_str(&role_str).map_err(|e| anyhow::anyhow!(e))?;
+        let tools_used = row
+            .get::<Option<String>, _>("tool_calls")
+            .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+            .unwrap_or_default();
         messages.push(ChatMessage {
             id: row.get("id"),
             session_id: row.get("session_id"),
             role,
             content: row.get("content"),
             created_at: row.get("created_at"),
-            tools_used: Vec::new(),
+            tools_used,
         });
     }
 
     Ok(messages)
 }
 
-/// Insert a message into a session and return the stored row. Also bumps the
-/// session's `updated_at` so recently-used sessions sort to the top.
+/// Insert a message into a session and return the stored row. `tools_used` are
+/// the display labels for any tools the assistant invoked while producing this
+/// message (empty for user messages); they are stored as a JSON array. Also
+/// bumps the session's `updated_at` so recently-used sessions sort to the top.
 pub async fn insert_message(
     pool: &SqlitePool,
     session_id: &str,
     role: Role,
     content: &str,
+    tools_used: &[String],
 ) -> Result<ChatMessage> {
+    let tool_calls_json = if tools_used.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(tools_used).context("failed to serialize tool labels")?)
+    };
+
     let result = sqlx::query(
-        "INSERT INTO chat_messages (session_id, role, content) VALUES (?, ?, ?)",
+        "INSERT INTO chat_messages (session_id, role, content, tool_calls) VALUES (?, ?, ?, ?)",
     )
     .bind(session_id)
     .bind(role.as_str())
     .bind(content)
+    .bind(&tool_calls_json)
     .execute(pool)
     .await
     .context("failed to insert chat message")?;
@@ -185,7 +210,7 @@ pub async fn insert_message(
         role,
         content: content.to_string(),
         created_at: row.get("created_at"),
-        tools_used: Vec::new(),
+        tools_used: tools_used.to_vec(),
     })
 }
 
