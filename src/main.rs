@@ -23,6 +23,10 @@ use config::AppConfig;
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .init();
+
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -46,6 +50,13 @@ async fn run() -> Result<()> {
     };
 
     println!("App state: {app_state:?}");
+
+    // Test the fetch rss source
+    let raw_items =
+        fetchers::rss::fetch_rss_source(&app_state.http_client, &app_state.config.sources.rss[0])
+            .await?;
+
+    tracing::info!("First Rss Feed Raw Items: {raw_items:?}");
 
     Ok(())
 }

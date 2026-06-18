@@ -23,3 +23,13 @@ pub enum ConfigError {
     #[error("invalid configuration: {0}")]
     Invalid(String),
 }
+
+/// Errors raised while fetching or parsing an upstream source.
+#[derive(Debug, Error)]
+pub enum FetchError {
+    #[error("http request failed: {0}")]
+    Http(#[source] reqwest::Error),
+
+    #[error("failed to parse feed: {0}")]
+    Parse(String),
+}

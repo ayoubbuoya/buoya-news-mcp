@@ -26,10 +26,6 @@ name = "anthropic"
 url = "https://www.anthropic.com/news/rss.xml"
 category = "ai"
 
-[sources.hn]
-enabled = true
-min_points = 80
-keywords = ["ai", "llm", "gpt", "claude", "model"]
 
 [sources.defillama]
 enabled = true
