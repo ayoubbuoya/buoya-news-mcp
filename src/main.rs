@@ -1,8 +1,5 @@
 //! buoya-news-mcp entry point.
 //!
-//! For now this only loads and validates configuration; tracing init, DB
-//! migration, the fetch scheduler, and the stdio MCP server are wired in by
-//! later tasks (BNM-3, BNM-9, BNM-10).
 
 // The lints table denies unwrap/expect crate-wide; tests are allowed to use them.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
@@ -12,30 +9,43 @@
 
 mod config;
 mod error;
+mod fetchers;
+mod state;
 mod types;
 
 use std::path::Path;
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::time::Duration;
 
+use anyhow::Result;
 use config::AppConfig;
 
-fn main() -> ExitCode {
-    let config_path = Path::new("config.default.toml");
-
-    match AppConfig::load(config_path) {
-        Ok(cfg) => {
-            // Logging goes to stderr; stdout is reserved for the MCP protocol.
-            eprintln!(
-                "config loaded: {} RSS feed(s), news interval {:?}, watchlist of {} term(s)",
-                cfg.sources.rss.len(),
-                5,
-                cfg.general.watchlist.len(),
-            );
-            ExitCode::SUCCESS
-        }
+#[tokio::main]
+async fn main() -> ExitCode {
+    match run().await {
+        Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("error: {e}");
+            tracing::error!("{e:#}");
             ExitCode::FAILURE
         }
     }
+}
+
+async fn run() -> Result<()> {
+    let cfg = AppConfig::load(Path::new("config.default.toml"))?;
+
+    let http_client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(cfg.http.timeout_ms))
+        .user_agent(&cfg.http.user_agent)
+        .build()?;
+
+    let app_state = state::AppState {
+        http_client,
+        config: Arc::new(cfg),
+    };
+
+    println!("App state: {app_state:?}");
+
+    Ok(())
 }
