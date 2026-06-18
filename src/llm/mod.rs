@@ -1,15 +1,34 @@
+mod tools;
+
 use anyhow::Result;
 use async_openai::config::OpenAIConfig;
 use async_openai::types::chat::{
-    ChatCompletionRequestAssistantMessage, ChatCompletionRequestMessage,
-    ChatCompletionRequestSystemMessage, ChatCompletionRequestUserMessage,
-    CreateChatCompletionRequestArgs,
+    ChatCompletionMessageToolCall, ChatCompletionMessageToolCalls,
+    ChatCompletionRequestAssistantMessage, ChatCompletionRequestAssistantMessageArgs,
+    ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage,
+    ChatCompletionRequestToolMessageArgs, ChatCompletionRequestUserMessage,
+    CreateChatCompletionRequestArgs, FunctionCall,
 };
 use futures::StreamExt;
+use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::state::AppState;
 use crate::types::{ChatMessage, Role};
+
+/// System prompt prepended to every conversation. It steers the model toward the
+/// article-reading tools when a question concerns stored news.
+const SYSTEM_PROMPT: &str = "You are Buoya, a news assistant. You have tools to \
+read a local database of news articles covering crypto, AI, security, and \
+markets. When the user asks about news, a topic, a company, or a token, use the \
+tools to look up stored articles before answering, and ground your reply in what \
+you find. Cite article titles and sources. If the database has nothing relevant, \
+say so plainly instead of inventing details. For general questions unrelated to \
+stored news, answer directly without using the tools.";
+
+/// Upper bound on tool-call rounds in a single turn, guarding against a model
+/// that loops on tool calls without ever producing a final answer.
+const MAX_TOOL_ROUNDS: usize = 5;
 
 /// Events emitted while an assistant response streams in. Consumed by the TUI
 /// event loop; the LLM task never panics, it reports failures as `Error`.
@@ -36,60 +55,183 @@ fn to_request_message(msg: &ChatMessage) -> ChatCompletionRequestMessage {
     }
 }
 
+/// A tool call assembled from streamed deltas. The model sends a call's id,
+/// name, and arguments in fragments across many chunks, keyed by `index`.
+#[derive(Default)]
+struct ToolCallAccum {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+/// Outcome of streaming one assistant turn: either it finished a text answer, or
+/// it requested tool calls that must be run before continuing.
+enum TurnOutcome {
+    /// The model produced its final answer; tokens were already forwarded.
+    Finished,
+    /// The model asked to call these tools; run them and loop.
+    ToolCalls(Vec<ToolCallAccum>),
+    /// The receiver was dropped (UI closed); stop silently.
+    Aborted,
+}
+
 /// Stream a chat completion for the given conversation `history`, forwarding each
-/// token to `tx`. Sends `StreamEvent::Done` on success or `StreamEvent::Error`
-/// on any failure. Designed to be run in a spawned task.
+/// token to `tx`. The model may call article-reading tools (against `pool`)
+/// before producing its answer; tool rounds are resolved transparently and only
+/// the final answer's tokens reach `tx`. Sends `StreamEvent::Done` on success or
+/// `StreamEvent::Error` on any failure. Designed to be run in a spawned task.
 pub async fn prompt_stream(
     client: async_openai::Client<OpenAIConfig>,
     history: Vec<ChatMessage>,
     model: String,
+    pool: SqlitePool,
     tx: UnboundedSender<StreamEvent>,
 ) {
-    let messages: Vec<ChatCompletionRequestMessage> =
-        history.iter().map(to_request_message).collect();
+    // Prepend the system prompt; it is not persisted in `history`.
+    let mut messages: Vec<ChatCompletionRequestMessage> =
+        Vec::with_capacity(history.len() + 1);
+    messages.push(ChatCompletionRequestSystemMessage::from(SYSTEM_PROMPT).into());
+    messages.extend(history.iter().map(to_request_message));
 
-    let request = match CreateChatCompletionRequestArgs::default()
-        .model(model)
-        .messages(messages)
-        .build()
-    {
-        Ok(req) => req,
-        Err(e) => {
-            let _ = tx.send(StreamEvent::Error(format!("failed to build request: {e}")));
-            return;
-        }
-    };
-
-    let mut stream = match client.chat().create_stream(request).await {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = tx.send(StreamEvent::Error(format!("request failed: {e}")));
-            return;
-        }
-    };
-
-    while let Some(item) = stream.next().await {
-        match item {
-            Ok(response) => {
-                if let Some(content) = response
-                    .choices
-                    .first()
-                    .and_then(|choice| choice.delta.content.clone())
-                    && !content.is_empty()
-                    && tx.send(StreamEvent::Token(content)).is_err()
-                {
-                    // Receiver dropped (UI closed); stop streaming.
+    for _ in 0..MAX_TOOL_ROUNDS {
+        match stream_turn(&client, &model, &messages, &tx).await {
+            Ok(TurnOutcome::Finished) => {
+                let _ = tx.send(StreamEvent::Done);
+                return;
+            }
+            Ok(TurnOutcome::Aborted) => return,
+            Ok(TurnOutcome::ToolCalls(calls)) => {
+                if let Err(e) = run_tool_round(&pool, &mut messages, calls).await {
+                    let _ = tx.send(StreamEvent::Error(e.to_string()));
                     return;
                 }
             }
-            Err(e) => {
-                let _ = tx.send(StreamEvent::Error(format!("stream error: {e}")));
+            Err(message) => {
+                let _ = tx.send(StreamEvent::Error(message));
                 return;
             }
         }
     }
 
-    let _ = tx.send(StreamEvent::Done);
+    let _ = tx.send(StreamEvent::Error(
+        "the model kept requesting tools without answering".to_string(),
+    ));
+}
+
+/// Stream a single assistant turn, forwarding text tokens to `tx` and gathering
+/// any tool-call deltas. Returns the turn's outcome, or an error string.
+async fn stream_turn(
+    client: &async_openai::Client<OpenAIConfig>,
+    model: &str,
+    messages: &[ChatCompletionRequestMessage],
+    tx: &UnboundedSender<StreamEvent>,
+) -> std::result::Result<TurnOutcome, String> {
+    let request = CreateChatCompletionRequestArgs::default()
+        .model(model)
+        .messages(messages.to_vec())
+        .tools(tools::tool_definitions())
+        .build()
+        .map_err(|e| format!("failed to build request: {e}"))?;
+
+    let mut stream = client
+        .chat()
+        .create_stream(request)
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+
+    let mut tool_calls: Vec<ToolCallAccum> = Vec::new();
+
+    while let Some(item) = stream.next().await {
+        let response = item.map_err(|e| format!("stream error: {e}"))?;
+        let Some(choice) = response.choices.first() else {
+            continue;
+        };
+
+        if let Some(content) = &choice.delta.content
+            && !content.is_empty()
+            && tx.send(StreamEvent::Token(content.clone())).is_err()
+        {
+            // Receiver dropped (UI closed); stop streaming.
+            return Ok(TurnOutcome::Aborted);
+        }
+
+        if let Some(deltas) = &choice.delta.tool_calls {
+            accumulate_tool_calls(&mut tool_calls, deltas);
+        }
+    }
+
+    // The stream has fully drained, so any accumulated calls are complete. Run
+    // them rather than relying on `finish_reason`, which some OpenAI-compatible
+    // providers omit. A call with no name is noise from a stray delta; drop it.
+    tool_calls.retain(|call| !call.name.is_empty());
+    if tool_calls.is_empty() {
+        Ok(TurnOutcome::Finished)
+    } else {
+        Ok(TurnOutcome::ToolCalls(tool_calls))
+    }
+}
+
+/// Merge streamed tool-call fragments into `acc`, keyed by their `index`.
+fn accumulate_tool_calls(
+    acc: &mut Vec<ToolCallAccum>,
+    deltas: &[async_openai::types::chat::ChatCompletionMessageToolCallChunk],
+) {
+    for delta in deltas {
+        let idx = delta.index as usize;
+        if idx >= acc.len() {
+            acc.resize_with(idx + 1, ToolCallAccum::default);
+        }
+        let entry = &mut acc[idx];
+        if let Some(id) = &delta.id {
+            entry.id.push_str(id);
+        }
+        if let Some(function) = &delta.function {
+            if let Some(name) = &function.name {
+                entry.name.push_str(name);
+            }
+            if let Some(arguments) = &function.arguments {
+                entry.arguments.push_str(arguments);
+            }
+        }
+    }
+}
+
+/// Append the assistant's tool-call message followed by each tool's result, so
+/// the next turn sees what was requested and what came back.
+async fn run_tool_round(
+    pool: &SqlitePool,
+    messages: &mut Vec<ChatCompletionRequestMessage>,
+    calls: Vec<ToolCallAccum>,
+) -> Result<()> {
+    let tool_calls: Vec<ChatCompletionMessageToolCalls> = calls
+        .iter()
+        .map(|call| {
+            ChatCompletionMessageToolCalls::Function(ChatCompletionMessageToolCall {
+                id: call.id.clone(),
+                function: FunctionCall {
+                    name: call.name.clone(),
+                    arguments: call.arguments.clone(),
+                },
+            })
+        })
+        .collect();
+
+    let assistant_msg = ChatCompletionRequestAssistantMessageArgs::default()
+        .tool_calls(tool_calls)
+        .build()?;
+    messages.push(assistant_msg.into());
+
+    for call in calls {
+        tracing::debug!("running tool {} with args {}", call.name, call.arguments);
+        let result = tools::execute(pool, &call.name, &call.arguments).await;
+        let tool_msg = ChatCompletionRequestToolMessageArgs::default()
+            .tool_call_id(call.id)
+            .content(result)
+            .build()?;
+        messages.push(tool_msg.into());
+    }
+
+    Ok(())
 }
 
 pub async fn prompt(app_state: &AppState, prompt: &str, model: &str) -> Result<String> {

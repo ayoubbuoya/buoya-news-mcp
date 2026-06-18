@@ -273,7 +273,8 @@ impl App {
         let client = self.state.llm_client.clone();
         let model = self.state.config.ai_model.clone();
         let history = self.messages.clone();
-        tokio::spawn(llm::prompt_stream(client, history, model, tx));
+        let pool = self.state.db_pool.clone();
+        tokio::spawn(llm::prompt_stream(client, history, model, pool, tx));
 
         self.pending_stream_rx = Some(rx);
         self.status = Status::Streaming {
