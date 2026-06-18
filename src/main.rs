@@ -15,6 +15,7 @@ mod error;
 mod fetchers;
 mod ingest;
 mod llm;
+mod server;
 mod tui;
 mod types;
 
@@ -22,8 +23,27 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
 use config::AppConfig;
 use core::Core;
+use server::ServeArgs;
+
+/// buoya-news-agent: a local news agent over crypto, DeFi, AI, security, and markets.
+#[derive(Debug, Parser)]
+#[command(name = "buoya", version, about)]
+struct Cli {
+    #[command(subcommand)]
+    mode: Option<Mode>,
+}
+
+/// Which surface to run. Defaults to the interactive TUI when omitted.
+#[derive(Debug, Subcommand)]
+enum Mode {
+    /// Run the interactive terminal chat UI (default).
+    Tui,
+    /// Run the HTTP backend: REST + SSE for a frontend, and MCP at /mcp.
+    Serve(ServeArgs),
+}
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -64,12 +84,16 @@ fn init_logging() -> Result<tracing_appender::non_blocking::WorkerGuard> {
 }
 
 async fn run() -> Result<()> {
+    let cli = Cli::parse();
+
     let cfg = AppConfig::load(Path::new("config.default.toml"))?;
 
-    // Build the core (shared state + background ingest/backfill tasks), then hand
-    // it to a front-end adapter. Today that is always the TUI; later this is where
-    // a mode flag selects the HTTP server, MCP server, or connectors.
+    // Build the core (shared state + background ingest/backfill tasks) once, then
+    // hand it to the selected front-end adapter.
     let core = Core::start(cfg).await?;
 
-    tui::run(core).await
+    match cli.mode {
+        None | Some(Mode::Tui) => tui::run(core).await,
+        Some(Mode::Serve(args)) => server::run(core, args).await,
+    }
 }
