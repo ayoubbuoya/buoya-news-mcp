@@ -1,6 +1,7 @@
 //! Terminal chat UI: an interactive, persisted conversation with the agent.
 
 mod app;
+mod markdown;
 mod ui;
 
 use std::time::Duration;

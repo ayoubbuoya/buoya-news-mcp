@@ -7,6 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
 use crate::tui::app::{App, Focus, Status};
+use crate::tui::markdown;
 use crate::types::Role;
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -99,13 +100,22 @@ fn push_message(lines: &mut Vec<Line<'static>>, role: Role, content: &str, width
         Style::default().fg(color).add_modifier(Modifier::BOLD),
     )));
 
-    for raw_line in content.split('\n') {
-        if raw_line.is_empty() {
-            lines.push(Line::from(String::new()));
-            continue;
+    match role {
+        // The user typed plain text; render it verbatim (just wrapped).
+        Role::User => {
+            for raw_line in content.split('\n') {
+                if raw_line.is_empty() {
+                    lines.push(Line::from(String::new()));
+                    continue;
+                }
+                for wrapped in wrap(raw_line, width) {
+                    lines.push(Line::from(wrapped));
+                }
+            }
         }
-        for wrapped in wrap(raw_line, width) {
-            lines.push(Line::from(wrapped));
+        // The agent replies in Markdown; render it richly.
+        Role::Assistant | Role::System => {
+            lines.extend(markdown::render(content, width));
         }
     }
     lines.push(Line::from(String::new()));
