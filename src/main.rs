@@ -11,8 +11,8 @@
 #![allow(dead_code)]
 
 mod config;
-mod domain;
 mod error;
+mod types;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -20,16 +20,15 @@ use std::process::ExitCode;
 use config::AppConfig;
 
 fn main() -> ExitCode {
-    let default_path = Path::new("config.default.toml");
-    let user_path = Path::new("config.toml");
+    let config_path = Path::new("config.default.toml");
 
-    match AppConfig::load(default_path, user_path) {
+    match AppConfig::load(config_path) {
         Ok(cfg) => {
             // Logging goes to stderr; stdout is reserved for the MCP protocol.
             eprintln!(
                 "config loaded: {} RSS feed(s), news interval {:?}, watchlist of {} term(s)",
                 cfg.sources.rss.len(),
-                cfg.intervals.news.as_duration(),
+                5,
                 cfg.general.watchlist.len(),
             );
             ExitCode::SUCCESS

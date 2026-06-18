@@ -3,16 +3,6 @@
 # Every field here has a matching #[serde(default)] in src/config.rs, so a missing
 # config.toml still produces a valid configuration.
 
-[intervals]            # humantime strings — per-source-group fetch cadence
-news = "12h"
-market = "12h"
-security = "12h"
-
-[staleness]            # lazy refresh: a tool call older than this triggers an ingest
-news = "6h"
-market = "1h"
-security = "6h"
-max_wait_ms = 8000
 
 # --- RSS feeds: one [[sources.rss]] table per feed; remove an entry to disable it ---
 
@@ -20,25 +10,21 @@ max_wait_ms = 8000
 name = "coindesk"
 url = "https://www.coindesk.com/arc/outboundfeeds/rss/"
 category = "crypto"
-authority = 0.8
 
 [[sources.rss]]
 name = "cointelegraph"
 url = "https://cointelegraph.com/rss"
 category = "crypto"
-authority = 0.7
 
 [[sources.rss]]
 name = "rekt"
 url = "https://rekt.news/rss/feed.xml"
 category = "security"
-authority = 0.9
 
 [[sources.rss]]
 name = "anthropic"
 url = "https://www.anthropic.com/news/rss.xml"
 category = "ai"
-authority = 0.95
 
 [sources.hn]
 enabled = true
@@ -69,61 +55,8 @@ max_per_run = 25
 [sources.huggingface]
 enabled = true
 
-[scoring]
-half_life_hours = 48
-watchlist_multiplier = 1.5
-
-[scoring.weights]
-coverage = 3.0
-community = 2.0
-keywords = 1.5
-impact = 4.0
-
-[[scoring.keywords]]
-term = "exploit"
-weight = 1.0
-
-[[scoring.keywords]]
-term = "drained"
-weight = 1.0
-
-[[scoring.keywords]]
-term = "hack"
-weight = 1.0
-
-[[scoring.keywords]]
-term = "halted"
-weight = 0.8
-
-[[scoring.keywords]]
-term = "outage"
-weight = 0.7
-
-[[scoring.keywords]]
-term = "state of the art"
-weight = 0.6
-
-[[scoring.keywords]]
-term = "sec"
-weight = 0.5
-
-[[scoring.keywords]]
-term = "open source"
-weight = 0.4
-
-[thresholds]
-critical_loss_usd = 10000000
-notable_loss_usd = 1000000
-critical_pct = 15.0
-notable_pct = 8.0
-critical_coverage = 4
-
-[dedup]
-jaccard_threshold = 0.6
-window_hours = 48
-
 [general]
-watchlist = ["hedera", "hbar", "stellar", "xlm", "ethereum"]
+watchlist = ["hedera", "hbar", "stellar", "xlm", "ethereum", "solana"]
 retention_days = 90
 
 [http]
