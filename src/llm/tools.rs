@@ -53,7 +53,7 @@ pub fn tool_definitions() -> Vec<ChatCompletionTools> {
                     "category": {
                         "type": "string",
                         "description": "Restrict to a single category.",
-                        "enum": ["crypto", "ai", "security", "market"]
+                        "enum": ["crypto", "ai", "security", "market", "defi"]
                     },
                     "limit": {
                         "type": "integer",
