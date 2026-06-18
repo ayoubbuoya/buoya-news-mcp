@@ -81,6 +81,19 @@ pub fn tool_definitions() -> Vec<ChatCompletionTools> {
                 "required": ["id"]
             }),
         ),
+        function_tool(
+            "get_market_snapshot",
+            "Get the latest structured market snapshots: the crypto Fear & Greed \
+             sentiment index, a top-coins-by-market-cap overview with 24h moves, \
+             and total DeFi TVL by chain. Use this for questions about market \
+             sentiment/mood, current prices or movers, or DeFi TVL — not \
+             search_articles. Returns the most recent daily snapshot for each.",
+            json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+        ),
     ]
 }
 
@@ -106,6 +119,7 @@ pub async fn execute(pool: &SqlitePool, name: &str, arguments: &str) -> String {
         "search_articles" => search_articles(pool, arguments).await,
         "list_recent_articles" => list_recent_articles(pool, arguments).await,
         "get_article" => get_article(pool, arguments).await,
+        "get_market_snapshot" => get_market_snapshot(pool).await,
         other => Err(anyhow::anyhow!("unknown tool: {other}")),
     };
 
@@ -233,6 +247,42 @@ async fn get_article(pool: &SqlitePool, arguments: &str) -> Result<Value> {
         })),
         None => Ok(json!({ "error": format!("no article with id {id}") })),
     }
+}
+
+/// The synthesized snapshot sources, fetched by [`get_market_snapshot`]. Each is
+/// written once per day by its fetcher, so the newest row is today's reading.
+const SNAPSHOT_SOURCES: [&str; 3] = ["fear-greed", "coingecko", "defillama"];
+
+async fn get_market_snapshot(pool: &SqlitePool) -> Result<Value> {
+    let mut snapshots: Vec<Value> = Vec::with_capacity(SNAPSHOT_SOURCES.len());
+
+    for source in SNAPSHOT_SOURCES {
+        let row = sqlx::query(
+            "SELECT id, title, url, source, category, summary, content, published_at
+             FROM articles
+             WHERE source = ?
+             ORDER BY published_at DESC
+             LIMIT 1",
+        )
+        .bind(source)
+        .fetch_optional(pool)
+        .await
+        .with_context(|| format!("failed to fetch latest {source} snapshot"))?;
+
+        if let Some(row) = row {
+            snapshots.push(json!({
+                "id": row.get::<i64, _>("id"),
+                "title": row.get::<String, _>("title"),
+                "source": row.get::<String, _>("source"),
+                "category": row.get::<String, _>("category"),
+                "summary": row.get::<Option<String>, _>("summary"),
+                "content": row.get::<Option<String>, _>("content"),
+                "published_at": row.get::<String, _>("published_at"),
+            }));
+        }
+    }
+
+    Ok(json!({ "count": snapshots.len(), "snapshots": snapshots }))
 }
 
 /// Project a row into the compact shape used by list/search results: enough for

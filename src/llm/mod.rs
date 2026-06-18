@@ -19,12 +19,18 @@ use crate::types::{ChatMessage, Role};
 /// System prompt prepended to every conversation. It steers the model toward the
 /// article-reading tools when a question concerns stored news.
 const SYSTEM_PROMPT: &str = "You are Buoya, a news assistant. You have tools to \
-read a local database of news articles covering crypto, AI, security, and \
-markets. When the user asks about news, a topic, a company, or a token, use the \
-tools to look up stored articles before answering, and ground your reply in what \
-you find. Cite article titles and sources. If the database has nothing relevant, \
-say so plainly instead of inventing details. For general questions unrelated to \
-stored news, answer directly without using the tools.";
+read a local database covering crypto, DeFi, AI, security, and markets. It holds \
+two kinds of records: (1) news articles from RSS feeds, and (2) daily market \
+snapshots — a crypto Fear & Greed sentiment index, a top-coins market overview \
+with 24h price moves, and total DeFi TVL by chain. \
+When the user asks about news, a topic, a company, or a token, use \
+search_articles or list_recent_articles, then get_article to read in depth. \
+For questions about market sentiment or mood, current prices or movers, or DeFi \
+TVL, call get_market_snapshot instead of searching the articles. \
+Ground your reply in what the tools return and cite article titles and sources. \
+If the database has nothing relevant, say so plainly instead of inventing \
+details. For general questions unrelated to stored data, answer directly without \
+using the tools.";
 
 /// Build the system prompt for a conversation, appending the current UTC date and
 /// time so the model can answer time-relative questions ("latest", "this week",
@@ -36,7 +42,7 @@ fn system_prompt() -> String {
 
 /// Upper bound on tool-call rounds in a single turn, guarding against a model
 /// that loops on tool calls without ever producing a final answer.
-const MAX_TOOL_ROUNDS: usize = 5;
+const MAX_TOOL_ROUNDS: usize = 8;
 
 /// Events emitted while an assistant response streams in. Consumed by the TUI
 /// event loop; the LLM task never panics, it reports failures as `Error`.
@@ -55,13 +61,9 @@ pub enum StreamEvent {
 /// Convert a stored chat message into an `async-openai` request message.
 fn to_request_message(msg: &ChatMessage) -> ChatCompletionRequestMessage {
     match msg.role {
-        Role::System => {
-            ChatCompletionRequestSystemMessage::from(msg.content.as_str()).into()
-        }
+        Role::System => ChatCompletionRequestSystemMessage::from(msg.content.as_str()).into(),
         Role::User => ChatCompletionRequestUserMessage::from(msg.content.as_str()).into(),
-        Role::Assistant => {
-            ChatCompletionRequestAssistantMessage::from(msg.content.as_str()).into()
-        }
+        Role::Assistant => ChatCompletionRequestAssistantMessage::from(msg.content.as_str()).into(),
     }
 }
 
@@ -98,8 +100,7 @@ pub async fn prompt_stream(
     tx: UnboundedSender<StreamEvent>,
 ) {
     // Prepend the system prompt; it is not persisted in `history`.
-    let mut messages: Vec<ChatCompletionRequestMessage> =
-        Vec::with_capacity(history.len() + 1);
+    let mut messages: Vec<ChatCompletionRequestMessage> = Vec::with_capacity(history.len() + 1);
     messages.push(ChatCompletionRequestSystemMessage::from(system_prompt()).into());
     messages.extend(history.iter().map(to_request_message));
 
@@ -255,13 +256,20 @@ async fn run_tool_round(
 fn describe_call(name: &str, arguments: &str) -> String {
     let args: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
     let detail = match name {
-        "search_articles" => args.get("query").and_then(|v| v.as_str()).map(|q| format!("\"{q}\"")),
+        "search_articles" => args
+            .get("query")
+            .and_then(|v| v.as_str())
+            .map(|q| format!("\"{q}\"")),
         "list_recent_articles" => args
             .get("category")
             .and_then(|v| v.as_str())
             .map(str::to_string)
             .or(Some("recent".to_string())),
-        "get_article" => args.get("id").and_then(|v| v.as_i64()).map(|id| format!("#{id}")),
+        "get_article" => args
+            .get("id")
+            .and_then(|v| v.as_i64())
+            .map(|id| format!("#{id}")),
+        "get_market_snapshot" => Some("sentiment, prices, TVL".to_string()),
         _ => None,
     };
     match detail {
