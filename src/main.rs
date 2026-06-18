@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use async_openai::{Client, config::OpenAIConfig};
 use config::AppConfig;
 
 #[tokio::main]
@@ -45,8 +46,15 @@ async fn run() -> Result<()> {
         .user_agent(&cfg.toml_config.http.user_agent)
         .build()?;
 
+    let llm_config = OpenAIConfig::new()
+        .with_api_key(&cfg.ai_api_key)
+        .with_api_base(&cfg.ai_base_url);
+
+    let llm_client = Client::with_config(llm_config);
+
     let app_state = state::AppState {
         http_client,
+        llm_client,
         config: Arc::new(cfg),
     };
 

@@ -13,7 +13,7 @@ expect_used = "deny"
 
 [dependencies]
 anyhow = "1.0.102"
-async-openai = "0.41.0"
+async-openai = { version = "0.41.0", features = ["chat-completion"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 dotenvy = "0.15.7"
 feed-rs = "2.3.1"
