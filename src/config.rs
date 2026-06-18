@@ -132,6 +132,8 @@ impl Default for HuggingfaceSource {
 pub struct General {
     pub watchlist: Vec<String>,
     pub retention_days: u32,
+    /// How often to re-run ingest, in seconds. Ingest also runs once at startup.
+    pub ingest_interval_secs: u64,
 }
 
 impl Default for General {
@@ -145,6 +147,7 @@ impl Default for General {
                 "ethereum".into(),
             ],
             retention_days: 90,
+            ingest_interval_secs: 900,
         }
     }
 }
@@ -213,6 +216,9 @@ impl TomlConfig {
         }
         if !self.any_source_enabled() {
             return Err(inv("at least one source must be enabled".into()));
+        }
+        if self.general.ingest_interval_secs == 0 {
+            return Err(inv("general.ingest_interval_secs must be greater than 0".into()));
         }
         Ok(())
     }

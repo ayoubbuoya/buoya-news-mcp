@@ -88,11 +88,24 @@ async fn run() -> Result<()> {
         config: Arc::new(cfg),
     };
 
-    // Refresh the news in the background so the UI opens immediately.
+    // Refresh the news in the background so the UI opens immediately, then keep
+    // re-ingesting on the configured interval.
     let ingest_state = app_state.clone();
+
+    let ingest_period =
+        Duration::from_secs(ingest_state.config.toml_config.general.ingest_interval_secs);
+
     tokio::spawn(async move {
-        let new_stored = ingest::run(&ingest_state).await;
-        tracing::info!("Ingested {} new items", new_stored);
+        let mut ticker = tokio::time::interval(ingest_period);
+        // Default `MissedTickBehavior::Burst` would fire back-to-back if a run
+        // overruns the period; skip stale ticks so we resume on schedule instead.
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            // First tick completes immediately, so ingest runs once at startup.
+            ticker.tick().await;
+            let new_stored = ingest::run(&ingest_state).await;
+            tracing::info!("Ingested {} new items", new_stored);
+        }
     });
 
     // Hand control to the chat TUI.

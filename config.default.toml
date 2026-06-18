@@ -104,6 +104,8 @@ enabled = true
 [general]
 watchlist = ["hedera", "hbar", "stellar", "xlm", "ethereum", "solana"]
 retention_days = 90
+# How often to re-run ingest, in seconds. Ingest also runs once at startup.
+ingest_interval_secs = 900
 
 [http]
 timeout_ms = 15_000
