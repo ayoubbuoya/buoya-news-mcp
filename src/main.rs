@@ -10,6 +10,7 @@
 mod config;
 mod error;
 mod fetchers;
+mod llm;
 mod state;
 mod types;
 
@@ -37,11 +38,11 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> Result<()> {
-    let cfg = AppConfig::load(Path::new("config.default.toml"))?;
+    let cfg = AppConfig::load(Path::new("config.default.toml"));
 
     let http_client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(cfg.http.timeout_ms))
-        .user_agent(&cfg.http.user_agent)
+        .timeout(Duration::from_millis(cfg.toml_config.http.timeout_ms))
+        .user_agent(&cfg.toml_config.http.user_agent)
         .build()?;
 
     let app_state = state::AppState {
@@ -52,9 +53,11 @@ async fn run() -> Result<()> {
     println!("App state: {app_state:?}");
 
     // Test the fetch rss source
-    let raw_items =
-        fetchers::rss::fetch_rss_source(&app_state.http_client, &app_state.config.sources.rss[0])
-            .await?;
+    let raw_items = fetchers::rss::fetch_rss_source(
+        &app_state.http_client,
+        &app_state.config.toml_config.sources.rss[0],
+    )
+    .await?;
 
     tracing::info!("First Rss Feed Raw Items: {raw_items:?}");
 

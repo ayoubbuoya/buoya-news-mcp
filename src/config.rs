@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use dotenvy::dotenv;
 use serde::Deserialize;
 
 use crate::error::ConfigError;
@@ -9,7 +10,7 @@ use crate::types::Category;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AppConfig {
+pub struct TomlConfig {
     #[serde(default)]
     pub sources: Sources,
     #[serde(default)]
@@ -164,7 +165,7 @@ impl Default for Http {
     }
 }
 
-impl AppConfig {
+impl TomlConfig {
     /// Load defaults from `default_path`, deep-merge `user_path` on top if it
     /// exists, deserialize, and validate.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
@@ -179,7 +180,7 @@ impl AppConfig {
                 source: e,
             })?;
 
-        let cfg: AppConfig = toml_config.try_into().map_err(|e| ConfigError::Parse {
+        let cfg: TomlConfig = toml_config.try_into().map_err(|e| ConfigError::Parse {
             path: path.display().to_string(),
             source: e,
         })?;
@@ -193,7 +194,7 @@ impl AppConfig {
     /// Deserialize from a single TOML string (no merge). Used by tests and any
     /// caller that already holds the merged source.
     pub fn from_str(toml_str: &str) -> Result<Self, ConfigError> {
-        let cfg: AppConfig = toml::from_str(toml_str).map_err(|e| ConfigError::Parse {
+        let cfg: TomlConfig = toml::from_str(toml_str).map_err(|e| ConfigError::Parse {
             path: "<string>".into(),
             source: e,
         })?;
@@ -224,5 +225,30 @@ impl AppConfig {
             || self.sources.reddit.enabled
             || self.sources.arxiv.enabled
             || self.sources.huggingface.enabled
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AppConfig {
+    pub ai_api_key: String,
+    pub ai_base_url: String,
+    pub toml_config: TomlConfig,
+}
+
+impl AppConfig {
+    pub fn load(toml_config_path: &Path) -> Self {
+        dotenv().ok();
+
+        let ai_api_key = std::env::var("AI_API_KEY").expect("AI_API_KEY env var not set");
+        let ai_base_url =
+            std::env::var("AI_BASE_URL").unwrap_or(String::from("https://openrouter.ai/api/v1"));
+        let toml_config =
+            TomlConfig::load(toml_config_path).expect("Failed to load toml config file");
+
+        Self {
+            ai_api_key,
+            ai_base_url,
+            toml_config,
+        }
     }
 }
