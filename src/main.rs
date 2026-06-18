@@ -8,8 +8,10 @@
 #![allow(dead_code)]
 
 mod config;
+mod db;
 mod error;
 mod fetchers;
+mod ingest;
 mod llm;
 mod state;
 mod types;
@@ -52,6 +54,9 @@ async fn run() -> Result<()> {
 
     let llm_client = Client::with_config(llm_config);
 
+    // Init db
+    let _pool = db::init_db().await?;
+
     let app_state = state::AppState {
         http_client,
         llm_client,
@@ -73,9 +78,9 @@ async fn run() -> Result<()> {
 
     let prompt = "What happened in crypto today ?";
 
-    let response = llm::prompt(&app_state, prompt, llm_model).await?;
+    // let response = llm::prompt(&app_state, prompt, llm_model).await?;
 
-    tracing::info!("LLM Response: {response}");
+    // tracing::info!("LLM Response: {response}");
 
     Ok(())
 }
