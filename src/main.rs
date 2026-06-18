@@ -55,11 +55,12 @@ async fn run() -> Result<()> {
     let llm_client = Client::with_config(llm_config);
 
     // Init db
-    let _pool = db::init_db().await?;
+    let db_pool = db::init_db().await?;
 
     let app_state = state::AppState {
         http_client,
         llm_client,
+        db_pool,
         config: Arc::new(cfg),
     };
 
