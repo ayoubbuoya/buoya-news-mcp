@@ -1,4 +1,4 @@
-# buoya-news-mcp default configuration.
+# buoya-news-agent default configuration.
 # Committed defaults. User overrides go in config.toml (gitignored if it holds tokens).
 # Every field here has a matching #[serde(default)] in src/config.rs, so a missing
 # config.toml still produces a valid configuration.
