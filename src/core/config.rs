@@ -17,6 +17,9 @@ pub struct TomlConfig {
     pub general: General,
     #[serde(default)]
     pub http: Http,
+    /// Outbound connectors (Telegram, …). Absent in config = all disabled.
+    #[serde(default)]
+    pub connectors: Connectors,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -165,6 +168,27 @@ impl Default for General {
     }
 }
 
+/// Push/notification connectors. Each connector is opt-in (disabled by default) so
+/// the daemon runs fine with none configured.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Connectors {
+    pub telegram: TelegramToml,
+}
+
+/// Non-secret Telegram connector settings. The bot **token is a secret** and lives
+/// in the environment (`TELEGRAM_BOT_TOKEN`), not here — see [`AppConfig`].
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TelegramToml {
+    /// Master switch. When false, the connector never starts regardless of token.
+    pub enabled: bool,
+    /// Destination chat/group/channel id that alerts are sent to.
+    pub chat_id: String,
+    /// Category allowlist for alerts. Empty = send every category.
+    pub categories: Vec<Category>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Http {
@@ -227,6 +251,14 @@ impl TomlConfig {
                 "sources.cryptopanic is enabled but api_key is empty".into()
             ));
         }
+        // A Telegram connector with no destination can't do anything useful. The bot
+        // token isn't checked here — it's an env var, not part of TomlConfig — so the
+        // `serve` wiring handles a missing token by simply not starting the connector.
+        if self.connectors.telegram.enabled && self.connectors.telegram.chat_id.trim().is_empty() {
+            return Err(inv(
+                "connectors.telegram is enabled but chat_id is empty".into(),
+            ));
+        }
         if !self.any_source_enabled() {
             return Err(inv("at least one source must be enabled".into()));
         }
@@ -254,6 +286,10 @@ pub struct AppConfig {
     pub ai_base_url: String,
     pub ai_model: String,
     pub toml_config: TomlConfig,
+    /// Telegram bot token, read from `TELEGRAM_BOT_TOKEN`. `None` when unset — the
+    /// connector simply won't start. Kept out of `toml_config` because it's a secret
+    /// and belongs in the environment, not a committed/loaded TOML file.
+    pub telegram_bot_token: Option<String>,
 }
 
 impl AppConfig {
@@ -268,11 +304,19 @@ impl AppConfig {
             std::env::var("AI_MODEL").unwrap_or(String::from("openai/gpt-oss-20b:free"));
         let toml_config = TomlConfig::load(toml_config_path)?;
 
+        // Optional: only present when the user wants the Telegram connector. A blank
+        // value is treated the same as unset so an empty `TELEGRAM_BOT_TOKEN=` line
+        // doesn't pass the "token present" gate.
+        let telegram_bot_token = std::env::var("TELEGRAM_BOT_TOKEN")
+            .ok()
+            .filter(|t| !t.trim().is_empty());
+
         Ok(Self {
             ai_api_key,
             ai_base_url,
             ai_model,
             toml_config,
+            telegram_bot_token,
         })
     }
 }

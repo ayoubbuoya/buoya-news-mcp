@@ -7,6 +7,7 @@
 // fetchers, scoring — BNM-3/6/7/10). Lift this once those tasks wire them in.
 #![allow(dead_code)]
 
+mod connectors;
 mod core;
 mod server;
 mod tui;

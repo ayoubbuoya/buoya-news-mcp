@@ -112,3 +112,14 @@ ingest_interval_secs = 900
 [http]
 timeout_ms = 15_000
 user_agent = "buoya-news-agent/1.0 (personal aggregator)"
+
+
+# --- Connectors: push notifications to external services ---
+
+# Telegram push alerts on newly-ingested articles. Opt-in: disabled by default.
+# The bot TOKEN is a secret and goes in the environment (TELEGRAM_BOT_TOKEN), not
+# here. Only runs under `buoya serve`. See docs/telegram-connector-plan.md for setup.
+[connectors.telegram]
+enabled = true
+chat_id = "1125089709"          # target chat/group/channel id; required when enabled
+categories = []       # category allowlist (e.g. ["defi", "security"]); empty = all
