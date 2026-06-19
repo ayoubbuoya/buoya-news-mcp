@@ -40,16 +40,21 @@ The chat runs an **LLM tool-use loop**: the model is given tools to read the ing
 
 ### `buoya serve` — HTTP backend (REST + SSE)
 
-An [actix-web](https://actix.rs/) daemon that exposes the same core to a frontend. Plain JSON data routes (no LLM involved) plus a streaming `POST /chat` that drives the agent and relays events as Server-Sent Events. It also starts any enabled push connectors (e.g. Telegram).
+An [actix-web](https://actix.rs/) daemon that exposes the same core to a frontend: persisted **chat sessions** that mirror the TUI (drive an agent turn and stream the reply as Server-Sent Events), read-only JSON data routes (no LLM involved), and CORS enabled for browser clients. It also starts any enabled push connectors (e.g. Telegram). A full web-client build spec lives in [docs/frontend-spec.md](docs/frontend-spec.md).
 
-| Method & path | What it returns |
+| Method & path | What it does |
 |---|---|
-| `GET /health` | `{"status":"ok"}` |
+| `GET /sessions` | List chat sessions, most-recently-updated first |
+| `POST /sessions` | Create a session (`{"title"?}`) |
+| `GET /sessions/{id}/messages` | Full message history for a session (or 404) |
+| `PATCH /sessions/{id}` | Rename a session (`{"title"}`) |
+| `DELETE /sessions/{id}` | Delete a session and its messages |
+| `POST /sessions/{id}/chat` | Send a message (`{"content"}`); persists both turns; streams SSE `token` / `tool` / `done` / `error` |
+| `POST /chat` | Stateless variant — client supplies full history; nothing persisted |
 | `GET /articles?category=&limit=` | Most recent articles (optionally by category) |
 | `GET /articles/search?q=&semantic=&limit=` | Keyword search, or meaning-based vector search when `semantic=true` |
 | `GET /articles/{id}` | Full article record, or 404 |
 | `GET /market/snapshot` | Latest daily snapshot per market source |
-| `POST /chat` | Drives one agent turn; streams SSE events `token` / `tool` / `done` / `error` |
 | `* /mcp` | **Stub** — returns 501 until the MCP adapter is mounted (see [Roadmap](#roadmap)) |
 | `GET /swagger-ui/` | Interactive API docs (Swagger UI) |
 | `GET /api-docs/openapi.json` | OpenAPI 3.1 document |

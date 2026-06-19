@@ -6,11 +6,9 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::core::Core;
 use crate::core::db;
+use crate::core::db::DEFAULT_SESSION_TITLE;
 use crate::core::llm::StreamEvent;
 use crate::core::types::{ChatMessage, ChatSession, Role};
-
-/// Title given to a freshly created session until its first user message renames it.
-const DEFAULT_SESSION_TITLE: &str = "New chat";
 
 /// Which pane currently receives navigation keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,7 +264,7 @@ impl App {
 
         // Auto-title a still-unnamed session from its opening message.
         if is_first {
-            let title = title_from(&text);
+            let title = db::title_from(&text);
             db::rename_session(&self.state.db_pool, &session_id, &title).await?;
             if let Some(s) = self.sessions.iter_mut().find(|s| s.id == session_id) {
                 s.title = title;
@@ -334,18 +332,5 @@ impl App {
         self.error = error;
         self.follow = true;
         Ok(())
-    }
-}
-
-/// Build a short session title from the first user message.
-fn title_from(text: &str) -> String {
-    let first_line = text.lines().next().unwrap_or(text).trim();
-    let truncated: String = first_line.chars().take(40).collect();
-    if truncated.is_empty() {
-        DEFAULT_SESSION_TITLE.to_string()
-    } else if first_line.chars().count() > 40 {
-        format!("{truncated}…")
-    } else {
-        truncated
     }
 }
