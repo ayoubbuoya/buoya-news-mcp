@@ -11,6 +11,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use async_openai::{Client, config::OpenAIConfig};
 use sqlx::SqlitePool;
+use tokio::sync::broadcast;
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 
 pub mod config;
@@ -28,7 +29,13 @@ use embeddings::Embedder;
 use llm::StreamEvent;
 use types::ChatMessage;
 
-use repository::Repository;
+use repository::{ArticleSummary, Repository};
+
+/// How many ingest batches the broadcast channel buffers per subscriber before the
+/// oldest are dropped. Alerts are allowed to be lossy (a slow connector lagging is
+/// fine); the ingest loop must never block waiting on a subscriber, so we cap the
+/// buffer rather than let it grow unbounded.
+const INGEST_BROADCAST_CAPACITY: usize = 64;
 
 /// Shared, cheaply-cloneable handle to everything an adapter needs. Clones share
 /// the same connection pool, clients, and embedder.
@@ -39,6 +46,13 @@ pub struct Core {
     pub db_pool: SqlitePool,
     pub llm_client: Client<OpenAIConfig>,
     pub embedder: Arc<Embedder>,
+    /// Publishes a batch of newly-ingested articles after each ingest tick. This is
+    /// the sender end; adapters get a receiver via [`Core::subscribe_ingest`].
+    /// Holding the sender in `Core` keeps the channel alive even when no one is
+    /// currently subscribed (a fresh subscriber simply starts receiving the next
+    /// batch). Cloning `Core` clones the sender, so every clone publishes/subscribes
+    /// to the same channel.
+    ingest_tx: broadcast::Sender<Arc<[ArticleSummary]>>,
 }
 
 impl Core {
@@ -68,12 +82,20 @@ impl Core {
             .await
             .context("embedder load task panicked")??;
 
+        // Create the ingest broadcast channel. We keep the sender in `Core` and
+        // deliberately drop the initial receiver: subscribers are created on demand
+        // via `subscribe_ingest`, and a broadcast channel with no receivers just
+        // discards what it sends (which is exactly what we want before anyone is
+        // listening).
+        let (ingest_tx, _) = broadcast::channel(INGEST_BROADCAST_CAPACITY);
+
         let core = Self {
             http_client,
             config: Arc::new(config),
             db_pool,
             llm_client,
             embedder: Arc::new(embedder),
+            ingest_tx,
         };
 
         core.spawn_background_tasks();
@@ -84,6 +106,31 @@ impl Core {
     /// tools, HTTP, MCP) should go through this rather than touching the pool.
     pub fn repository(&self) -> Repository {
         Repository::new(self.db_pool.clone(), self.embedder.clone())
+    }
+
+    /// Subscribe to newly-ingested articles. Each ingest tick that stores at least
+    /// one new article publishes exactly one batch; the returned receiver yields
+    /// those batches in order. Multiple subscribers each get their own copy (it's a
+    /// fan-out broadcast), so connectors, a future SSE feed, etc. can all listen
+    /// independently.
+    ///
+    /// The receiver is lossy under pressure: if a subscriber falls more than
+    /// [`INGEST_BROADCAST_CAPACITY`] batches behind, `recv` returns a
+    /// `RecvError::Lagged(n)` telling it how many it missed, then resumes. This is
+    /// intentional — alerts may be dropped, but ingestion is never blocked.
+    pub fn subscribe_ingest(&self) -> broadcast::Receiver<Arc<[ArticleSummary]>> {
+        self.ingest_tx.subscribe()
+    }
+
+    /// Publish a batch of newly-ingested articles to all current subscribers. Called
+    /// by the ingest loop after a tick. We convert the `Vec` into an `Arc<[_]>` so
+    /// every subscriber shares one allocation instead of cloning the batch N times.
+    ///
+    /// `send` returns `Err` only when there are no subscribers; that's a normal,
+    /// expected state (e.g. running without any connector), so we ignore it rather
+    /// than treat it as a failure.
+    pub(crate) fn publish_ingest(&self, articles: Vec<ArticleSummary>) {
+        let _ = self.ingest_tx.send(Arc::from(articles));
     }
 
     /// Drive one assistant turn over `history`, returning a receiver of streamed

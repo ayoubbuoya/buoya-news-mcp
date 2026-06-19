@@ -1,6 +1,7 @@
 use anyhow::Context;
 use sqlx::Row;
 
+use crate::core::repository::ArticleSummary;
 use crate::core::{Core, embeddings, fetchers, types::RawItem};
 
 /// Max characters of an article fed to the embedder. BGE-small truncates around
@@ -12,12 +13,16 @@ const EMBED_TEXT_MAX_CHARS: usize = 1500;
 /// newly-stored items.
 pub async fn run(app_state: &Core) -> usize {
     let cfg = &app_state.config.toml_config;
-    let mut new_stored: usize = 0;
+
+    // Accumulate every article newly stored across all sources this tick. We gather
+    // them here (rather than publishing per source) so subscribers receive one batch
+    // per ingest run instead of a burst of small ones.
+    let mut new_articles: Vec<ArticleSummary> = Vec::new();
 
     // --- RSS / Atom feeds ---
     for source in &cfg.sources.rss {
         match fetchers::rss::fetch_rss_source(&app_state.http_client, source).await {
-            Ok(raw_items) => new_stored += store_items(app_state, &raw_items).await,
+            Ok(raw_items) => new_articles.extend(store_items(app_state, &raw_items).await),
             Err(e) => tracing::error!(
                 "Failed to fetch rss source {} at {}: {}",
                 source.name,
@@ -35,7 +40,7 @@ pub async fn run(app_state: &Core) -> usize {
         )
         .await
         {
-            Ok(items) => new_stored += store_items(app_state, &items).await,
+            Ok(items) => new_articles.extend(store_items(app_state, &items).await),
             Err(e) => tracing::error!("Failed to fetch coingecko market overview: {}", e),
         }
     }
@@ -43,7 +48,7 @@ pub async fn run(app_state: &Core) -> usize {
     // --- DeFiLlama TVL overview (keyless) ---
     if cfg.sources.defillama.enabled {
         match fetchers::defillama::fetch_tvl_overview(&app_state.http_client).await {
-            Ok(items) => new_stored += store_items(app_state, &items).await,
+            Ok(items) => new_articles.extend(store_items(app_state, &items).await),
             Err(e) => tracing::error!("Failed to fetch defillama tvl overview: {}", e),
         }
     }
@@ -51,19 +56,32 @@ pub async fn run(app_state: &Core) -> usize {
     // --- Fear & Greed Index (keyless) ---
     if cfg.sources.fear_greed.enabled {
         match fetchers::feargreed::fetch_fear_greed(&app_state.http_client).await {
-            Ok(items) => new_stored += store_items(app_state, &items).await,
+            Ok(items) => new_articles.extend(store_items(app_state, &items).await),
             Err(e) => tracing::error!("Failed to fetch fear & greed index: {}", e),
         }
+    }
+
+    let new_stored = new_articles.len();
+
+    // Notify subscribers (e.g. the Telegram connector) of what just landed. Skip the
+    // call entirely on an empty tick — there's nothing to announce, and it avoids
+    // waking subscribers for no reason. `publish_ingest` is itself a no-op when no
+    // one is subscribed.
+    if !new_articles.is_empty() {
+        app_state.publish_ingest(new_articles);
     }
 
     new_stored
 }
 
 /// Persist a batch of raw items, ignoring duplicates (by URL). Newly-inserted
-/// rows are then embedded and indexed for semantic search. Returns the count of
-/// rows actually inserted.
-async fn store_items(app_state: &Core, items: &[RawItem]) -> usize {
-    let mut stored = 0;
+/// rows are then embedded and indexed for semantic search. Returns an
+/// [`ArticleSummary`] for each row actually inserted, so the caller can announce
+/// them to ingest subscribers.
+async fn store_items(app_state: &Core, items: &[RawItem]) -> Vec<ArticleSummary> {
+    // One summary per row we actually insert (duplicates are skipped). This both
+    // counts the inserts (via `.len()`) and carries them to the broadcast channel.
+    let mut stored: Vec<ArticleSummary> = Vec::new();
     // (article id, text-to-embed) for rows actually inserted, embedded together
     // as one batch after the loop.
     let mut to_embed: Vec<(i64, String)> = Vec::new();
@@ -87,9 +105,26 @@ async fn store_items(app_state: &Core, items: &[RawItem]) -> usize {
         .await;
 
         match result {
+            // `rows_affected() > 0` means the row was new (INSERT OR IGNORE skips
+            // duplicate URLs with 0 rows affected). Build its summary from the data
+            // we just inserted plus the new rowid — no extra SELECT needed. The
+            // `category`/`published_at` strings match exactly what's stored, so the
+            // summary is identical to what a later DB read would produce.
             Ok(r) if r.rows_affected() > 0 => {
-                stored += 1;
-                to_embed.push((r.last_insert_rowid(), embed_text(item)));
+                let id = r.last_insert_rowid();
+                stored.push(ArticleSummary {
+                    id,
+                    title: item.title.clone(),
+                    url: item.url.clone(),
+                    source: item.source.clone(),
+                    category,
+                    summary: item.summary.clone(),
+                    published_at,
+                    // `distance` is only meaningful for semantic-search results;
+                    // these are freshly-ingested, not a query match.
+                    distance: None,
+                });
+                to_embed.push((id, embed_text(item)));
             }
             Ok(_) => {}
             Err(e) => tracing::error!("Failed to insert article {}: {}", item.url, e),
