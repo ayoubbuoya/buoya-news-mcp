@@ -20,6 +20,7 @@ use clap::{Parser, Subcommand};
 use core::Core;
 use core::config::AppConfig;
 use server::ServeArgs;
+use tracing_subscriber::EnvFilter;
 
 /// buoya-news-agent: a local news agent over crypto, DeFi, AI, security, and markets.
 #[derive(Debug, Parser)]
@@ -40,9 +41,15 @@ enum Mode {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    // The TUI owns the terminal, so logs must go to a file instead of stdout/stderr,
-    // otherwise tracing output would corrupt the rendered screen.
-    let _log_guard = match init_logging() {
+    let cli = Cli::parse();
+
+    // Logging destination depends on the mode: the TUI owns the terminal, so its
+    // logs must go to a file (stdout/stderr would corrupt the rendered screen),
+    // while `serve` has no UI and prints logs straight to the terminal.
+    //
+    // The guard (only present for file logging) must stay alive for the duration
+    // of the program so buffered logs are flushed.
+    let _log_guard = match init_logging(&cli.mode) {
         Ok(guard) => guard,
         Err(e) => {
             eprintln!("failed to initialize logging: {e:#}");
@@ -50,7 +57,7 @@ async fn main() -> ExitCode {
         }
     };
 
-    match run().await {
+    match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             tracing::error!("{e:#}");
@@ -60,9 +67,26 @@ async fn main() -> ExitCode {
     }
 }
 
-/// Route logs to `data/agent.log`. Returns a guard that must stay alive for the
-/// duration of the program so buffered logs are flushed.
-fn init_logging() -> Result<tracing_appender::non_blocking::WorkerGuard> {
+/// Restrict logging to this crate's own spans/events. Dependency crates are noisy
+/// and rarely useful here, so they're filtered out unless `RUST_LOG` overrides it.
+fn app_filter() -> EnvFilter {
+    EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("buoya_news_agent=debug"))
+}
+
+/// Initialize logging for the selected mode. `serve` logs to the terminal; the TUI
+/// (and the default no-arg invocation) logs to `data/agent.log`, returning a guard
+/// that must stay alive so buffered logs are flushed.
+fn init_logging(
+    mode: &Option<Mode>,
+) -> Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
+    if matches!(mode, Some(Mode::Serve(_))) {
+        tracing_subscriber::fmt()
+            .with_env_filter(app_filter())
+            .init();
+        return Ok(None);
+    }
+
     std::fs::create_dir_all("data").context("failed to create data directory")?;
     let file_appender = tracing_appender::rolling::never("data", "agent.log");
     let (writer, guard) = tracing_appender::non_blocking(file_appender);
@@ -70,15 +94,13 @@ fn init_logging() -> Result<tracing_appender::non_blocking::WorkerGuard> {
     tracing_subscriber::fmt()
         .with_writer(writer)
         .with_ansi(false)
-        .with_max_level(tracing::Level::DEBUG)
+        .with_env_filter(app_filter())
         .init();
 
-    Ok(guard)
+    Ok(Some(guard))
 }
 
-async fn run() -> Result<()> {
-    let cli = Cli::parse();
-
+async fn run(cli: Cli) -> Result<()> {
     let cfg = AppConfig::load(Path::new("config.default.toml"))?;
 
     // Build the core (shared state + background ingest/backfill tasks) once, then
