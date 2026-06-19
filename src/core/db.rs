@@ -156,6 +156,42 @@ pub async fn list_sessions(pool: &SqlitePool) -> Result<Vec<ChatSession>> {
         .collect())
 }
 
+/// Fetch a single session by id, or `None` if it doesn't exist.
+pub async fn get_session(pool: &SqlitePool, session_id: &str) -> Result<Option<ChatSession>> {
+    let row = sqlx::query(
+        "SELECT id, title, created_at, updated_at FROM chat_sessions WHERE id = ?",
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await
+    .context("failed to fetch chat session")?;
+
+    Ok(row.map(|row| ChatSession {
+        id: row.get("id"),
+        title: row.get("title"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }))
+}
+
+/// Delete a session and all of its messages. Messages are removed first since
+/// foreign-key enforcement isn't guaranteed to be on for this connection.
+pub async fn delete_session(pool: &SqlitePool, session_id: &str) -> Result<()> {
+    let mut tx = pool.begin().await.context("failed to begin delete tx")?;
+    sqlx::query("DELETE FROM chat_messages WHERE session_id = ?")
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to delete session messages")?;
+    sqlx::query("DELETE FROM chat_sessions WHERE id = ?")
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await
+        .context("failed to delete session")?;
+    tx.commit().await.context("failed to commit session delete")?;
+    Ok(())
+}
+
 /// Load every message of a session, oldest first.
 pub async fn load_messages(pool: &SqlitePool, session_id: &str) -> Result<Vec<ChatMessage>> {
     let rows = sqlx::query(
@@ -259,6 +295,25 @@ pub async fn rename_session(pool: &SqlitePool, session_id: &str, title: &str) ->
         .await
         .context("failed to rename session")?;
     Ok(())
+}
+
+/// Title given to a freshly created session until its first user message renames it.
+pub const DEFAULT_SESSION_TITLE: &str = "New chat";
+
+/// Build a short session title from the first line of a user message. Truncates to
+/// 40 characters and falls back to [`DEFAULT_SESSION_TITLE`] when the text is empty.
+/// Shared by every surface (TUI, HTTP) so a session is titled the same way regardless
+/// of where the first message came from.
+pub fn title_from(text: &str) -> String {
+    let first_line = text.lines().next().unwrap_or(text).trim();
+    let truncated: String = first_line.chars().take(40).collect();
+    if truncated.is_empty() {
+        DEFAULT_SESSION_TITLE.to_string()
+    } else if first_line.chars().count() > 40 {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
 }
 
 #[cfg(test)]

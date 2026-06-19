@@ -62,6 +62,7 @@ tokio-stream = "0.1.18"
 rmcp = { version = "1.7.0", features = ["server", "transport-streamable-http-server", "transport-streamable-http-server-session"] }
 utoipa = { version = "5.5.0", features = ["actix_extras", "chrono"] }
 utoipa-swagger-ui = { version = "9.0.2", features = ["actix-web", "vendored"] }
+actix-cors = "0.7.1"
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"

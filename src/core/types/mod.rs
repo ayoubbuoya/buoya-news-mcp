@@ -47,7 +47,7 @@ impl FromStr for Role {
 }
 
 /// A saved chat conversation. One row in `chat_sessions`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ChatSession {
     pub id: String,
     pub title: String,
@@ -56,7 +56,7 @@ pub struct ChatSession {
 }
 
 /// A single message within a session. One row in `chat_messages`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ChatMessage {
     pub id: i64,
     pub session_id: String,
