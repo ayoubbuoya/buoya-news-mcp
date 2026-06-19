@@ -51,10 +51,14 @@ An [actix-web](https://actix.rs/) daemon that exposes the same core to a fronten
 | `GET /market/snapshot` | Latest daily snapshot per market source |
 | `POST /chat` | Drives one agent turn; streams SSE events `token` / `tool` / `done` / `error` |
 | `* /mcp` | **Stub** — returns 501 until the MCP adapter is mounted (see [Roadmap](#roadmap)) |
+| `GET /swagger-ui/` | Interactive API docs (Swagger UI) |
+| `GET /api-docs/openapi.json` | OpenAPI 3.1 document |
 
 ```sh
 buoya serve --host 127.0.0.1 --port 8080
 ```
+
+Interactive API docs are generated from the route annotations ([utoipa](https://github.com/juhaku/utoipa)) and served by Swagger UI at <http://127.0.0.1:8080/swagger-ui/>; the raw OpenAPI document is at `/api-docs/openapi.json`.
 
 ### Tools the model can call
 

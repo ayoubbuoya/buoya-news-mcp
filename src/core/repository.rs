@@ -11,6 +11,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
+use utoipa::ToSchema;
 
 use crate::core::embeddings::{self, Embedder};
 
@@ -20,7 +21,7 @@ const SNAPSHOT_SOURCES: [&str; 3] = ["fear-greed", "coingecko", "defillama"];
 
 /// Compact article projection used by search/list results: enough to cite or to
 /// decide whether to fetch the full article, without the heavy `content` column.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ArticleSummary {
     pub id: i64,
     pub title: String,
@@ -36,7 +37,7 @@ pub struct ArticleSummary {
 }
 
 /// A full stored article, including the body `content`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct Article {
     pub id: i64,
     pub title: String,
@@ -49,7 +50,7 @@ pub struct Article {
 }
 
 /// One daily market-snapshot record (Fear & Greed, market overview, or DeFi TVL).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct SnapshotItem {
     pub id: i64,
     pub title: String,
