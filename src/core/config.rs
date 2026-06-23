@@ -156,9 +156,10 @@ pub struct DerivativesSource {
     /// `"BTCUSDT"`, `"HBARUSDT"`). Not the same as `general.watchlist`, which mixes
     /// coin names and tickers — derivatives need exact exchange symbols.
     pub symbols: Vec<String>,
-    /// Aggregation period for the long/short-ratio endpoint. Binance accepts
-    /// `5m`, `15m`, `30m`, `1h`, `2h`, `4h`, `6h`, `12h`, `1d`.
-    pub long_short_period: String,
+    /// Aggregation period for the futures stats endpoints (long/short, taker
+    /// volume, top-trader positions). Binance accepts `5m`, `15m`, `30m`, `1h`,
+    /// `2h`, `4h`, `6h`, `12h`, `1d`.
+    pub stats_period: String,
 }
 
 impl Default for DerivativesSource {
@@ -172,7 +173,7 @@ impl Default for DerivativesSource {
                 "HBARUSDT".into(),
                 "XLMUSDT".into(),
             ],
-            long_short_period: "5m".into(),
+            stats_period: "5m".into(),
         }
     }
 }
@@ -299,10 +300,10 @@ impl TomlConfig {
             ));
         }
         if self.sources.derivatives.enabled
-            && self.sources.derivatives.long_short_period.trim().is_empty()
+            && self.sources.derivatives.stats_period.trim().is_empty()
         {
             return Err(inv(
-                "sources.derivatives is enabled but long_short_period is empty".into(),
+                "sources.derivatives is enabled but stats_period is empty".into(),
             ));
         }
         if !self.any_source_enabled() {

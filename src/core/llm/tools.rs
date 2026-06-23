@@ -162,13 +162,17 @@ fn registry() -> Vec<Tool> {
         Tool {
             name: "get_derivatives",
             description: "Get crypto perpetual-futures derivatives metrics that market makers \
-                 watch: open interest (contracts and USD notional), funding rate, mark \
-                 price, and the long/short account ratio, per tracked symbol (e.g. \
-                 BTCUSDT, HBARUSDT). With no arguments, returns the latest reading for \
-                 every tracked symbol. Pass `symbol` to get that symbol's recent history \
-                 instead (newest first) for trend questions like \"is funding rising on \
-                 ETH?\". Use this for positioning, leverage, and funding questions — not \
-                 get_market_snapshot (spot prices/sentiment/TVL) or search_articles.",
+                 watch, per tracked symbol (e.g. BTCUSDT, HBARUSDT): open interest \
+                 (contracts and USD notional, plus its 24h % change), funding rate, mark \
+                 price, the global long/short account ratio (retail crowd), the taker \
+                 buy/sell volume ratio (aggressive order flow; >1 = net buying), and the \
+                 top-trader long/short ratio by position (smart-money positioning). With \
+                 no arguments, returns the latest reading for every tracked symbol. Pass \
+                 `symbol` to get that symbol's recent history instead (newest first) for \
+                 trend questions like \"is funding rising on ETH?\" or \"is open interest \
+                 building on HBAR?\". Use this for positioning, leverage, order-flow, and \
+                 funding questions — not get_market_snapshot (spot prices/sentiment/TVL) \
+                 or search_articles.",
             parameters: || {
                 json!({
                     "type": "object",

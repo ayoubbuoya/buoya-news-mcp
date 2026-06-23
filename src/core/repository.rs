@@ -74,8 +74,19 @@ pub struct DerivativesRow {
     pub long_short_ratio: Option<f64>,
     pub long_account: Option<f64>,
     pub short_account: Option<f64>,
+    pub taker_buy_sell_ratio: Option<f64>,
+    pub taker_buy_vol: Option<f64>,
+    pub taker_sell_vol: Option<f64>,
+    pub top_trader_long_short_ratio: Option<f64>,
+    pub top_trader_long_account: Option<f64>,
+    pub top_trader_short_account: Option<f64>,
     pub next_funding_time: Option<String>,
     pub fetched_at: String,
+    /// Percent change in USD open interest vs ~24h ago. Computed (not stored) and
+    /// only populated for the latest-per-symbol view when a ~24h-old reading
+    /// exists; omitted otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_interest_usd_change_24h_pct: Option<f64>,
 }
 
 /// Read access to the article store. Bundles the connection pool and embedder a
@@ -257,14 +268,13 @@ impl Repository {
     }
 
     /// The latest derivatives reading for each tracked symbol — the current
-    /// open-interest / funding / long-short picture across the watchlist. Ordered by
-    /// USD open interest (largest first); symbols with no rows yet are absent.
+    /// open-interest / funding / positioning picture across the watchlist. Ordered
+    /// by USD open interest (largest first); symbols with no rows yet are absent.
+    /// Each row's `open_interest_usd_change_24h_pct` is filled in from the reading
+    /// closest to 24h prior, when one exists.
     pub async fn latest_derivatives(&self) -> Result<Vec<DerivativesRow>> {
         let rows = sqlx::query(
-            "SELECT d.id, d.symbol, d.open_interest, d.open_interest_usd, d.funding_rate,
-                    d.mark_price, d.long_short_ratio, d.long_account, d.short_account,
-                    d.next_funding_time, d.fetched_at
-             FROM derivatives d
+            "SELECT d.* FROM derivatives d
              JOIN (SELECT symbol, MAX(id) AS max_id FROM derivatives GROUP BY symbol) latest
                ON d.id = latest.max_id
              ORDER BY d.open_interest_usd DESC",
@@ -273,7 +283,36 @@ impl Repository {
         .await
         .context("failed to fetch latest derivatives")?;
 
-        Ok(rows.iter().map(derivatives_row).collect())
+        let mut out: Vec<DerivativesRow> = rows.iter().map(derivatives_row).collect();
+
+        // The most recent reading per symbol at least ~24h old, used as the OI
+        // change baseline. Absent for symbols without that much history yet.
+        let reference = sqlx::query(
+            "SELECT d.symbol, d.open_interest_usd
+             FROM derivatives d
+             JOIN (SELECT symbol, MAX(id) AS rid
+                   FROM derivatives
+                   WHERE fetched_at <= datetime('now', '-24 hours')
+                   GROUP BY symbol) r
+               ON d.id = r.rid",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch derivatives 24h baseline")?;
+
+        for row in out.iter_mut() {
+            let prior = reference.iter().find_map(|r| {
+                let sym: String = r.get("symbol");
+                (sym == row.symbol).then(|| r.get::<Option<f64>, _>("open_interest_usd"))
+            });
+            if let (Some(now), Some(Some(then))) = (row.open_interest_usd, prior)
+                && then != 0.0
+            {
+                row.open_interest_usd_change_24h_pct = Some((now - then) / then * 100.0);
+            }
+        }
+
+        Ok(out)
     }
 
     /// The recent history of derivatives readings for a single symbol, newest
@@ -285,10 +324,7 @@ impl Repository {
         limit: i64,
     ) -> Result<Vec<DerivativesRow>> {
         let rows = sqlx::query(
-            "SELECT id, symbol, open_interest, open_interest_usd, funding_rate,
-                    mark_price, long_short_ratio, long_account, short_account,
-                    next_funding_time, fetched_at
-             FROM derivatives
+            "SELECT * FROM derivatives
              WHERE symbol = ? COLLATE NOCASE
              ORDER BY id DESC
              LIMIT ?",
@@ -315,8 +351,16 @@ fn derivatives_row(row: &SqliteRow) -> DerivativesRow {
         long_short_ratio: row.get("long_short_ratio"),
         long_account: row.get("long_account"),
         short_account: row.get("short_account"),
+        taker_buy_sell_ratio: row.get("taker_buy_sell_ratio"),
+        taker_buy_vol: row.get("taker_buy_vol"),
+        taker_sell_vol: row.get("taker_sell_vol"),
+        top_trader_long_short_ratio: row.get("top_trader_long_short_ratio"),
+        top_trader_long_account: row.get("top_trader_long_account"),
+        top_trader_short_account: row.get("top_trader_short_account"),
         next_funding_time: row.get("next_funding_time"),
         fetched_at: row.get("fetched_at"),
+        // Derived (not a column); filled in by latest_derivatives, left None here.
+        open_interest_usd_change_24h_pct: None,
     }
 }
 

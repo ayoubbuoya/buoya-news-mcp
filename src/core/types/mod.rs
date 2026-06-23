@@ -86,12 +86,27 @@ pub struct DerivativesSnapshot {
     pub funding_rate: Option<f64>,
     /// Mark price in USD.
     pub mark_price: Option<f64>,
-    /// Long/short account ratio (longAccount / shortAccount). >1 = more longs.
+    /// Global long/short account ratio (longAccount / shortAccount). >1 = more
+    /// accounts net long. This is the broad retail crowd.
     pub long_short_ratio: Option<f64>,
-    /// Fraction of accounts net long (0..1).
+    /// Fraction of all accounts net long (0..1).
     pub long_account: Option<f64>,
-    /// Fraction of accounts net short (0..1).
+    /// Fraction of all accounts net short (0..1).
     pub short_account: Option<f64>,
+    /// Taker buy/sell volume ratio: aggressive buy volume / aggressive sell volume
+    /// over the period. >1 = takers lifting offers (net buying pressure).
+    pub taker_buy_sell_ratio: Option<f64>,
+    /// Taker (aggressive) buy volume over the period, base-asset units.
+    pub taker_buy_vol: Option<f64>,
+    /// Taker (aggressive) sell volume over the period, base-asset units.
+    pub taker_sell_vol: Option<f64>,
+    /// Top-trader long/short ratio by **position** — how the largest accounts are
+    /// positioned (the "smart money" view, vs the retail `long_short_ratio`).
+    pub top_trader_long_short_ratio: Option<f64>,
+    /// Fraction of top-trader positions net long (0..1).
+    pub top_trader_long_account: Option<f64>,
+    /// Fraction of top-trader positions net short (0..1).
+    pub top_trader_short_account: Option<f64>,
     /// Next funding settlement time, RFC 3339.
     pub next_funding_time: Option<DateTime<Utc>>,
 }

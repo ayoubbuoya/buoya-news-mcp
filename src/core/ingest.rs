@@ -71,7 +71,7 @@ pub async fn run(app_state: &Core) -> usize {
         let snapshots = fetchers::binance_futures::fetch_derivatives(
             &app_state.http_client,
             &cfg.sources.derivatives.symbols,
-            &cfg.sources.derivatives.long_short_period,
+            &cfg.sources.derivatives.stats_period,
         )
         .await;
         let stored = store_derivatives(app_state, &snapshots).await;
@@ -169,8 +169,11 @@ async fn store_derivatives(app_state: &Core, snapshots: &[DerivativesSnapshot]) 
         let result = sqlx::query(
             "INSERT INTO derivatives
                 (symbol, open_interest, open_interest_usd, funding_rate, mark_price,
-                 long_short_ratio, long_account, short_account, next_funding_time)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 long_short_ratio, long_account, short_account,
+                 taker_buy_sell_ratio, taker_buy_vol, taker_sell_vol,
+                 top_trader_long_short_ratio, top_trader_long_account, top_trader_short_account,
+                 next_funding_time)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&s.symbol)
         .bind(s.open_interest)
@@ -180,6 +183,12 @@ async fn store_derivatives(app_state: &Core, snapshots: &[DerivativesSnapshot]) 
         .bind(s.long_short_ratio)
         .bind(s.long_account)
         .bind(s.short_account)
+        .bind(s.taker_buy_sell_ratio)
+        .bind(s.taker_buy_vol)
+        .bind(s.taker_sell_vol)
+        .bind(s.top_trader_long_short_ratio)
+        .bind(s.top_trader_long_account)
+        .bind(s.top_trader_short_account)
         .bind(&next_funding)
         .execute(&app_state.db_pool)
         .await;

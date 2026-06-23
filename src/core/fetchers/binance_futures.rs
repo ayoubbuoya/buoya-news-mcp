@@ -36,15 +36,28 @@ struct PremiumIndexResp {
     next_funding_time: i64,
 }
 
-/// One element of Binance `/futures/data/globalLongShortAccountRatio`.
+/// One element of an account/position long-short ratio series. Shared shape across
+/// Binance's `globalLongShortAccountRatio` (retail crowd) and
+/// `topLongShortPositionRatio` (largest traders by position).
 #[derive(Debug, Deserialize)]
-struct LongShortResp {
+struct AccountRatioResp {
     #[serde(rename = "longShortRatio")]
     long_short_ratio: String,
     #[serde(rename = "longAccount")]
     long_account: String,
     #[serde(rename = "shortAccount")]
     short_account: String,
+}
+
+/// One element of Binance `/futures/data/takerlongshortRatio`.
+#[derive(Debug, Deserialize)]
+struct TakerRatioResp {
+    #[serde(rename = "buySellRatio")]
+    buy_sell_ratio: String,
+    #[serde(rename = "buyVol")]
+    buy_vol: String,
+    #[serde(rename = "sellVol")]
+    sell_vol: String,
 }
 
 fn parse_open_interest(bytes: &[u8]) -> Result<f64, FetchError> {
@@ -59,14 +72,8 @@ fn parse_open_interest(bytes: &[u8]) -> Result<f64, FetchError> {
 fn parse_premium_index(bytes: &[u8]) -> Result<(f64, f64, Option<DateTime<Utc>>), FetchError> {
     let resp: PremiumIndexResp =
         serde_json::from_slice(bytes).map_err(|e| FetchError::Parse(e.to_string()))?;
-    let mark_price = resp
-        .mark_price
-        .parse()
-        .map_err(|e| FetchError::Parse(format!("markPrice not a number: {e}")))?;
-    let funding_rate = resp
-        .last_funding_rate
-        .parse()
-        .map_err(|e| FetchError::Parse(format!("lastFundingRate not a number: {e}")))?;
+    let mark_price = parse_field(&resp.mark_price, "markPrice")?;
+    let funding_rate = parse_field(&resp.last_funding_rate, "lastFundingRate")?;
     // 0 means "no next funding scheduled"; treat as absent rather than the epoch.
     let next = if resp.next_funding_time > 0 {
         Utc.timestamp_millis_opt(resp.next_funding_time).single()
@@ -76,28 +83,44 @@ fn parse_premium_index(bytes: &[u8]) -> Result<(f64, f64, Option<DateTime<Utc>>)
     Ok((mark_price, funding_rate, next))
 }
 
+/// Parse a number that Binance encodes as a JSON string, naming the field in any
+/// error.
+fn parse_field(raw: &str, field: &str) -> Result<f64, FetchError> {
+    raw.parse()
+        .map_err(|e| FetchError::Parse(format!("{field} not a number: {e}")))
+}
+
 /// Returns `(long_short_ratio, long_account, short_account)` from the most recent
-/// (last) element of the series. An empty array yields `None`.
+/// (last) element of a long/short series. An empty array yields `None`. Shared by
+/// the global-account and top-trader-position endpoints.
 #[allow(clippy::type_complexity)]
-fn parse_long_short(bytes: &[u8]) -> Result<Option<(f64, f64, f64)>, FetchError> {
-    let series: Vec<LongShortResp> =
+fn parse_account_ratio(bytes: &[u8]) -> Result<Option<(f64, f64, f64)>, FetchError> {
+    let series: Vec<AccountRatioResp> =
         serde_json::from_slice(bytes).map_err(|e| FetchError::Parse(e.to_string()))?;
     let Some(latest) = series.last() else {
         return Ok(None);
     };
-    let ratio = latest
-        .long_short_ratio
-        .parse()
-        .map_err(|e| FetchError::Parse(format!("longShortRatio not a number: {e}")))?;
-    let long = latest
-        .long_account
-        .parse()
-        .map_err(|e| FetchError::Parse(format!("longAccount not a number: {e}")))?;
-    let short = latest
-        .short_account
-        .parse()
-        .map_err(|e| FetchError::Parse(format!("shortAccount not a number: {e}")))?;
-    Ok(Some((ratio, long, short)))
+    Ok(Some((
+        parse_field(&latest.long_short_ratio, "longShortRatio")?,
+        parse_field(&latest.long_account, "longAccount")?,
+        parse_field(&latest.short_account, "shortAccount")?,
+    )))
+}
+
+/// Returns `(buy_sell_ratio, buy_vol, sell_vol)` from the most recent (last)
+/// element of the taker-volume series. An empty array yields `None`.
+#[allow(clippy::type_complexity)]
+fn parse_taker_ratio(bytes: &[u8]) -> Result<Option<(f64, f64, f64)>, FetchError> {
+    let series: Vec<TakerRatioResp> =
+        serde_json::from_slice(bytes).map_err(|e| FetchError::Parse(e.to_string()))?;
+    let Some(latest) = series.last() else {
+        return Ok(None);
+    };
+    Ok(Some((
+        parse_field(&latest.buy_sell_ratio, "buySellRatio")?,
+        parse_field(&latest.buy_vol, "buyVol")?,
+        parse_field(&latest.sell_vol, "sellVol")?,
+    )))
 }
 
 /// GET a URL and return the body bytes, mapping transport/status errors.
@@ -115,7 +138,28 @@ async fn get_bytes(http_client: &reqwest::Client, url: &str) -> Result<Vec<u8>, 
     Ok(bytes.to_vec())
 }
 
-/// Fetch a derivatives snapshot for one symbol. The three endpoints are read
+/// GET `url`, parse the body with `parse`, and reduce both transport and parse
+/// failures to `None` after logging — so one endpoint failing for a symbol leaves
+/// just that metric absent. `metric` names the field in log lines.
+async fn fetch_parse<T>(
+    http_client: &reqwest::Client,
+    url: &str,
+    symbol: &str,
+    metric: &str,
+    parse: fn(&[u8]) -> Result<T, FetchError>,
+) -> Option<T> {
+    match get_bytes(http_client, url).await {
+        Ok(bytes) => parse(&bytes)
+            .map_err(|e| tracing::warn!("derivatives {symbol}: {metric}: {e}"))
+            .ok(),
+        Err(e) => {
+            tracing::warn!("derivatives {symbol}: {metric} request: {e}");
+            None
+        }
+    }
+}
+
+/// Fetch a derivatives snapshot for one symbol. The five endpoints are read
 /// independently and each failure is tolerated (logged, field left `None`), so a
 /// partial outage still yields a useful row. Returns `None` only when *every*
 /// metric failed — nothing worth storing.
@@ -129,46 +173,49 @@ async fn fetch_one(
     let ls_url = format!(
         "{FAPI_BASE}/futures/data/globalLongShortAccountRatio?symbol={symbol}&period={period}&limit=1"
     );
+    let taker_url = format!(
+        "{FAPI_BASE}/futures/data/takerlongshortRatio?symbol={symbol}&period={period}&limit=1"
+    );
+    let top_url = format!(
+        "{FAPI_BASE}/futures/data/topLongShortPositionRatio?symbol={symbol}&period={period}&limit=1"
+    );
 
-    let open_interest = match get_bytes(http_client, &oi_url).await {
-        Ok(b) => parse_open_interest(&b)
-            .map_err(|e| tracing::warn!("derivatives {symbol}: open interest: {e}"))
-            .ok(),
-        Err(e) => {
-            tracing::warn!("derivatives {symbol}: open interest request: {e}");
-            None
-        }
-    };
+    let open_interest =
+        fetch_parse(http_client, &oi_url, symbol, "open interest", parse_open_interest).await;
 
     let (mark_price, funding_rate, next_funding_time) =
-        match get_bytes(http_client, &premium_url).await {
-            Ok(b) => match parse_premium_index(&b) {
-                Ok((m, f, n)) => (Some(m), Some(f), n),
-                Err(e) => {
-                    tracing::warn!("derivatives {symbol}: premium index: {e}");
-                    (None, None, None)
-                }
-            },
-            Err(e) => {
-                tracing::warn!("derivatives {symbol}: premium index request: {e}");
-                (None, None, None)
-            }
+        match fetch_parse(http_client, &premium_url, symbol, "premium index", parse_premium_index)
+            .await
+        {
+            Some((m, f, n)) => (Some(m), Some(f), n),
+            None => (None, None, None),
         };
 
     let (long_short_ratio, long_account, short_account) =
-        match get_bytes(http_client, &ls_url).await {
-            Ok(b) => match parse_long_short(&b) {
-                Ok(Some((r, l, s))) => (Some(r), Some(l), Some(s)),
-                Ok(None) => (None, None, None),
-                Err(e) => {
-                    tracing::warn!("derivatives {symbol}: long/short ratio: {e}");
-                    (None, None, None)
-                }
-            },
-            Err(e) => {
-                tracing::warn!("derivatives {symbol}: long/short ratio request: {e}");
-                (None, None, None)
-            }
+        match fetch_parse(http_client, &ls_url, symbol, "long/short ratio", parse_account_ratio)
+            .await
+            .flatten()
+        {
+            Some((r, l, s)) => (Some(r), Some(l), Some(s)),
+            None => (None, None, None),
+        };
+
+    let (taker_buy_sell_ratio, taker_buy_vol, taker_sell_vol) =
+        match fetch_parse(http_client, &taker_url, symbol, "taker volume", parse_taker_ratio)
+            .await
+            .flatten()
+        {
+            Some((r, b, s)) => (Some(r), Some(b), Some(s)),
+            None => (None, None, None),
+        };
+
+    let (top_trader_long_short_ratio, top_trader_long_account, top_trader_short_account) =
+        match fetch_parse(http_client, &top_url, symbol, "top-trader ratio", parse_account_ratio)
+            .await
+            .flatten()
+        {
+            Some((r, l, s)) => (Some(r), Some(l), Some(s)),
+            None => (None, None, None),
         };
 
     // Nothing came back at all — skip the symbol this tick.
@@ -176,6 +223,8 @@ async fn fetch_one(
         && mark_price.is_none()
         && funding_rate.is_none()
         && long_short_ratio.is_none()
+        && taker_buy_sell_ratio.is_none()
+        && top_trader_long_short_ratio.is_none()
     {
         return None;
     }
@@ -194,6 +243,12 @@ async fn fetch_one(
         long_short_ratio,
         long_account,
         short_account,
+        taker_buy_sell_ratio,
+        taker_buy_vol,
+        taker_sell_vol,
+        top_trader_long_short_ratio,
+        top_trader_long_account,
+        top_trader_short_account,
         next_funding_time,
     })
 }
@@ -243,20 +298,33 @@ mod tests {
     }
 
     #[test]
-    fn parses_long_short_taking_latest() {
+    fn parses_account_ratio_taking_latest() {
         let body = br#"[
             {"symbol":"ETHUSDT","longShortRatio":"1.20","longAccount":"0.55","shortAccount":"0.45","timestamp":1},
             {"symbol":"ETHUSDT","longShortRatio":"1.50","longAccount":"0.60","shortAccount":"0.40","timestamp":2}
         ]"#;
-        let (ratio, long, short) = parse_long_short(body).unwrap().unwrap();
+        let (ratio, long, short) = parse_account_ratio(body).unwrap().unwrap();
         assert_eq!(ratio, 1.50);
         assert_eq!(long, 0.60);
         assert_eq!(short, 0.40);
     }
 
     #[test]
-    fn empty_long_short_series_is_none() {
-        assert!(parse_long_short(b"[]").unwrap().is_none());
+    fn empty_account_ratio_series_is_none() {
+        assert!(parse_account_ratio(b"[]").unwrap().is_none());
+    }
+
+    #[test]
+    fn parses_taker_ratio_taking_latest() {
+        let body = br#"[
+            {"buySellRatio":"0.90","buyVol":"100.0","sellVol":"110.0","timestamp":1},
+            {"buySellRatio":"1.25","buyVol":"250.5","sellVol":"200.4","timestamp":2}
+        ]"#;
+        let (ratio, buy, sell) = parse_taker_ratio(body).unwrap().unwrap();
+        assert_eq!(ratio, 1.25);
+        assert_eq!(buy, 250.5);
+        assert_eq!(sell, 200.4);
+        assert!(parse_taker_ratio(b"[]").unwrap().is_none());
     }
 
     #[test]

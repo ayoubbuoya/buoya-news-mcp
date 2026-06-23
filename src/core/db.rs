@@ -68,17 +68,23 @@ pub async fn init_db() -> Result<SqlitePool> {
     // `articles` store. Written by the Binance-futures fetcher each ingest tick.
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS derivatives (
-            id                INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol            TEXT NOT NULL,
-            open_interest     REAL,
-            open_interest_usd REAL,
-            funding_rate      REAL,
-            mark_price        REAL,
-            long_short_ratio  REAL,
-            long_account      REAL,
-            short_account     REAL,
-            next_funding_time TEXT,
-            fetched_at        TEXT NOT NULL DEFAULT (datetime('now'))
+            id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol                      TEXT NOT NULL,
+            open_interest               REAL,
+            open_interest_usd           REAL,
+            funding_rate                REAL,
+            mark_price                  REAL,
+            long_short_ratio            REAL,
+            long_account                REAL,
+            short_account               REAL,
+            taker_buy_sell_ratio        REAL,
+            taker_buy_vol               REAL,
+            taker_sell_vol              REAL,
+            top_trader_long_short_ratio REAL,
+            top_trader_long_account     REAL,
+            top_trader_short_account    REAL,
+            next_funding_time           TEXT,
+            fetched_at                  TEXT NOT NULL DEFAULT (datetime('now'))
          );",
     )
     .execute(&pool)
